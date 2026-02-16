@@ -1,0 +1,192 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+header {
+    text-align: center;
+    padding: 3rem 1rem 2rem;
+}
+
+header h1 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: #f8fafc;
+    margin-bottom: 0.5rem;
+}
+
+header p {
+    font-size: 1.1rem;
+    color: #94a3b8;
+}
+
+main {
+    flex: 1;
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 1rem;
+    width: 100%;
+}
+
+.simulations-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.5rem;
+}
+
+.sim-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    transition: transform 0.2s, border-color 0.2s;
+}
+
+.sim-card:hover {
+    transform: translateY(-4px);
+    border-color: #3b82f6;
+}
+
+.sim-preview {
+    background: #0f172a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.sim-preview canvas {
+    display: block;
+}
+
+.sim-card h2 {
+    font-size: 1.25rem;
+    padding: 1rem 1rem 0.5rem;
+    color: #f1f5f9;
+}
+
+.sim-card p {
+    font-size: 0.9rem;
+    padding: 0 1rem 1rem;
+    color: #94a3b8;
+    line-height: 1.5;
+}
+
+footer {
+    text-align: center;
+    padding: 2rem 1rem;
+    color: #475569;
+    font-size: 0.85rem;
+}
+
+/* Shared layout for individual simulation pages */
+.sim-page {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.sim-page header {
+    padding: 1.5rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.sim-page header h1 {
+    font-size: 1.5rem;
+}
+
+.back-link {
+    color: #94a3b8;
+    text-decoration: none;
+    font-size: 0.9rem;
+    border: 1px solid #334155;
+    padding: 0.4rem 0.8rem;
+    border-radius: 6px;
+    transition: border-color 0.2s;
+    white-space: nowrap;
+}
+
+.back-link:hover {
+    border-color: #3b82f6;
+    color: #e2e8f0;
+}
+
+.sim-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 1rem 2rem;
+    gap: 1.5rem;
+}
+
+.sim-container canvas {
+    border: 1px solid #334155;
+    border-radius: 8px;
+    max-width: 100%;
+}
+
+.controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    justify-content: center;
+    background: #1e293b;
+    padding: 1.25rem;
+    border-radius: 10px;
+    border: 1px solid #334155;
+}
+
+.control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.control-group label {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.control-group span {
+    font-size: 0.85rem;
+    color: #cbd5e1;
+    text-align: center;
+}
+
+input[type="range"] {
+    accent-color: #3b82f6;
+    width: 140px;
+}
+
+button {
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    padding: 0.5rem 1.25rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background 0.2s;
+    align-self: center;
+}
+
+button:hover {
+    background: #2563eb;
+}
