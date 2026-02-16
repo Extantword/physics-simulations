@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Physics Simulations</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>Physics Simulations</h1>
+        <p>Interactive browser-based physics simulations</p>
+    </header>
+    <main>
+        <section class="simulations-grid">
+            <a href="simulations/pendulum/index.html" class="sim-card">
+                <div class="sim-preview">
+                    <canvas id="pendulum-preview" width="280" height="180"></canvas>
+                </div>
+                <h2>Simple Pendulum</h2>
+                <p>Explore the motion of a pendulum and how gravity, length, and damping affect its swing.</p>
+            </a>
+        </section>
+    </main>
+    <footer>
+        <p>Built with HTML5 Canvas &amp; JavaScript</p>
+    </footer>
+
+    <script>
+        // Tiny animated preview for the pendulum card
+        (function() {
+            const canvas = document.getElementById('pendulum-preview');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const cx = canvas.width / 2;
+            const cy = 20;
+            const len = 100;
+            let angle = Math.PI / 4;
+            let angVel = 0;
+            const g = 9.81;
+            const dt = 0.05;
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                const x = cx + len * Math.sin(angle);
+                const y = cy + len * Math.cos(angle);
+
+                ctx.strokeStyle = '#64748b';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+
+                ctx.fillStyle = '#3b82f6';
+                ctx.beginPath();
+                ctx.arc(x, y, 12, 0, Math.PI * 2);
+                ctx.fill();
+
+                angVel += (-g / len) * Math.sin(angle) * dt;
+                angVel *= 0.999;
+                angle += angVel * dt;
+
+                requestAnimationFrame(draw);
+            }
+            draw();
+        })();
+    </script>
+</body>
+</html>
