@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fluid Mechanics - Physics Simulations</title>
+    <link rel="stylesheet" href="../../style.css">
+    <style>
+        #canvas { cursor: crosshair; touch-action: none; }
+        .controls { flex-wrap: wrap; }
+        .info { color: #64748b; font-size: 0.8rem; text-align: center; }
+    </style>
+</head>
+<body class="sim-page">
+    <header>
+        <a href="../../index.html" class="back-link">&larr; Back</a>
+        <h1>Fluid Mechanics</h1>
+    </header>
+
+    <div class="sim-container">
+        <canvas id="canvas" width="800" height="500"></canvas>
+        <p class="info">Click or drag to create water &middot; Hold <kbd>Shift</kbd>+click to place a wall block</p>
+
+        <div class="controls">
+            <div class="control-group">
+                <label>Gravity</label>
+                <input type="range" id="gravity" min="0" max="40" value="20" step="1">
+                <span id="gravity-val">20</span>
+            </div>
+            <div class="control-group">
+                <label>Particle Size</label>
+                <input type="range" id="particle-size" min="3" max="8" value="5" step="0.5">
+                <span id="particle-size-val">5</span>
+            </div>
+            <div class="control-group">
+                <label>Spawn Rate</label>
+                <input type="range" id="spawn-rate" min="1" max="15" value="5">
+                <span id="spawn-rate-val">5</span>
+            </div>
+            <div class="control-group">
+                <label>Viscosity</label>
+                <input type="range" id="viscosity" min="0" max="100" value="40">
+                <span id="viscosity-val">40</span>
+            </div>
+            <button id="reset">Clear All</button>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width;
+        const H = canvas.height;
+
+        // --- Params ---
+        let GRAVITY = 20;
+        let RADIUS = 5;
+        let SPAWN_RATE = 5;
+        let VISCOSITY = 0.4;
+
+        const REST_DENSITY = 3;
+        const STIFFNESS = 200;
+        const DT = 1 / 60;
+        const WALL_DAMPING = 0.3;
+        const MAX_PARTICLES = 3000;
+
+        // --- State ---
+        let particles = [];
+        let walls = [];       // { x, y, w, h }
+        let pointerDown = false;
+        let pointerX = 0;
+        let pointerY = 0;
+        let shiftHeld = false;
+
+        // --- Spatial hash ---
+        const CELL = 20;
+        const COLS = Math.ceil(W / CELL);
+        const ROWS = Math.ceil(H / CELL);
+        let grid = new Array(COLS * ROWS);
+
+        function clearGrid() {
+            for (let i = 0; i < grid.length; i++) grid[i] = null;
+        }
+
+        function gridKey(cx, cy) {
+            return cy * COLS + cx;
+        }
+
+        function insertParticle(p, idx) {
+            const cx = Math.floor(p.x / CELL);
+            const cy = Math.floor(p.y / CELL);
+            if (cx < 0 || cx >= COLS || cy < 0 || cy >= ROWS) return;
+            const key = gridKey(cx, cy);
+            p._next = grid[key];
+            grid[key] = idx;
+        }
+
+        // --- Particle creation ---
+        function spawnAt(x, y, count) {
+            for (let i = 0; i < count; i++) {
+                if (particles.length >= MAX_PARTICLES) return;
+                particles.push({
+                    x: x + (Math.random() - 0.5) * RADIUS * 4,
+                    y: y + (Math.random() - 0.5) * RADIUS * 4,
+                    vx: (Math.random() - 0.5) * 30,
+                    vy: (Math.random() - 0.5) * 10,
+                    density: 0,
+                    _next: null
+                });
+            }
+        }
+
+        function addWallBlock(x, y) {
+            const s = 20;
+            const gx = Math.floor(x / s) * s;
+            const gy = Math.floor(y / s) * s;
+            // avoid duplicates
+            for (const w of walls) {
+                if (w.x === gx && w.y === gy) return;
+            }
+            walls.push({ x: gx, y: gy, w: s, h: s });
+        }
+
+        // --- Physics ---
+        const smooth = 25; // smoothing radius
+
+        function poly6(r2) {
+            const h2 = smooth * smooth;
+            if (r2 >= h2) return 0;
+            const d = h2 - r2;
+            return d * d * d;  // unnormalized, we just need relative density
+        }
+
+        function spikyGrad(r) {
+            if (r >= smooth || r < 0.001) return 0;
+            const d = smooth - r;
+            return -d * d;  // unnormalized gradient magnitude (negative = attractive if misused)
+        }
+
+        function simulate() {
+            const n = particles.length;
+            if (n === 0) return;
+
+            // Build spatial hash
+            clearGrid();
+            for (let i = 0; i < n; i++) {
+                particles[i]._next = null;
+                insertParticle(particles[i], i);
+            }
+
+            // Compute density
+            for (let i = 0; i < n; i++) {
+                particles[i].density = poly6(0); // self contribution
+            }
+
+            for (let i = 0; i < n; i++) {
+                const pi = particles[i];
+                const cx = Math.floor(pi.x / CELL);
+                const cy = Math.floor(pi.y / CELL);
+
+                for (let dy = -1; dy <= 1; dy++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const nx = cx + dx;
+                        const ny = cy + dy;
+                        if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
+                        let j = grid[gridKey(nx, ny)];
+                        while (j !== null && j !== undefined) {
+                            if (j > i) {
+                                const pj = particles[j];
+                                const ddx = pi.x - pj.x;
+                                const ddy = pi.y - pj.y;
+                                const r2 = ddx * ddx + ddy * ddy;
+                                const w = poly6(r2);
+                                pi.density += w;
+                                pj.density += w;
+                            }
+                            j = particles[j]._next;
+                        }
+                    }
+                }
+            }
+
+            // Compute pressure forces + viscosity
+            for (let i = 0; i < n; i++) {
+                const pi = particles[i];
+                const cx = Math.floor(pi.x / CELL);
+                const cy = Math.floor(pi.y / CELL);
+                const pressI = STIFFNESS * (pi.density - REST_DENSITY);
+
+                for (let dy = -1; dy <= 1; dy++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const nx = cx + dx;
+                        const ny = cy + dy;
+                        if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
+                        let j = grid[gridKey(nx, ny)];
+                        while (j !== null && j !== undefined) {
+                            if (j > i) {
+                                const pj = particles[j];
+                                const ddx = pi.x - pj.x;
+                                const ddy = pi.y - pj.y;
+                                const r2 = ddx * ddx + ddy * ddy;
+                                const r = Math.sqrt(r2);
+                                if (r < smooth && r > 0.001) {
+                                    const pressJ = STIFFNESS * (pj.density - REST_DENSITY);
+                                    const pressAvg = (pressI + pressJ) * 0.5;
+                                    const grad = spikyGrad(r);
+                                    const fx = (ddx / r) * pressAvg * grad;
+                                    const fy = (ddy / r) * pressAvg * grad;
+
+                                    // Viscosity
+                                    const visc = VISCOSITY * (smooth - r);
+                                    const vfx = visc * (pj.vx - pi.vx);
+                                    const vfy = visc * (pj.vy - pi.vy);
+
+                                    pi.vx += (fx + vfx) * DT;
+                                    pi.vy += (fy + vfy) * DT;
+                                    pj.vx -= (fx + vfx) * DT;
+                                    pj.vy -= (fy + vfy) * DT;
+                                }
+                            }
+                            j = particles[j]._next;
+                        }
+                    }
+                }
+            }
+
+            // Integrate + boundary + wall collisions
+            for (let i = 0; i < n; i++) {
+                const p = particles[i];
+                p.vy += GRAVITY * DT * 60;
+                p.x += p.vx * DT;
+                p.y += p.vy * DT;
+
+                // Canvas boundaries
+                if (p.x < RADIUS) { p.x = RADIUS; p.vx *= -WALL_DAMPING; }
+                if (p.x > W - RADIUS) { p.x = W - RADIUS; p.vx *= -WALL_DAMPING; }
+                if (p.y < RADIUS) { p.y = RADIUS; p.vy *= -WALL_DAMPING; }
+                if (p.y > H - RADIUS) { p.y = H - RADIUS; p.vy *= -WALL_DAMPING; }
+
+                // Wall block collisions
+                for (const w of walls) {
+                    // find closest point on wall rect to particle
+                    const closestX = Math.max(w.x, Math.min(p.x, w.x + w.w));
+                    const closestY = Math.max(w.y, Math.min(p.y, w.y + w.h));
+                    const dx = p.x - closestX;
+                    const dy = p.y - closestY;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < RADIUS && dist > 0.001) {
+                        const overlap = RADIUS - dist;
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+                        p.x += nx * overlap;
+                        p.y += ny * overlap;
+                        const dot = p.vx * nx + p.vy * ny;
+                        if (dot < 0) {
+                            p.vx -= (1 + WALL_DAMPING) * dot * nx;
+                            p.vy -= (1 + WALL_DAMPING) * dot * ny;
+                        }
+                    } else if (dist === 0) {
+                        // particle center is inside wall — push out
+                        const cx = w.x + w.w / 2;
+                        const cy = w.y + w.h / 2;
+                        const ex = p.x - cx;
+                        const ey = p.y - cy;
+                        if (Math.abs(ex) > Math.abs(ey)) {
+                            p.x = ex > 0 ? w.x + w.w + RADIUS : w.x - RADIUS;
+                            p.vx *= -WALL_DAMPING;
+                        } else {
+                            p.y = ey > 0 ? w.y + w.h + RADIUS : w.y - RADIUS;
+                            p.vy *= -WALL_DAMPING;
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Rendering ---
+        function render() {
+            ctx.clearRect(0, 0, W, H);
+
+            // Walls
+            ctx.fillStyle = '#475569';
+            for (const w of walls) {
+                ctx.fillRect(w.x, w.y, w.w, w.h);
+            }
+
+            // Water particles — draw with metaball-ish look using radial gradients on offscreen
+            // For performance, just draw circles with alpha blending
+            const n = particles.length;
+            if (n === 0) return;
+
+            // Draw particles
+            const r = RADIUS;
+            for (let i = 0; i < n; i++) {
+                const p = particles[i];
+                // color based on velocity
+                const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+                const t = Math.min(speed / 300, 1);
+                // lerp from deep blue (still) to light cyan (fast)
+                const red = Math.floor(30 + t * 100);
+                const green = Math.floor(100 + t * 155);
+                const blue = Math.floor(220 + t * 35);
+                const alpha = 0.85;
+                ctx.fillStyle = `rgba(${red},${green},${blue},${alpha})`;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // HUD
+            ctx.fillStyle = '#64748b';
+            ctx.font = '13px monospace';
+            ctx.fillText(`particles: ${n} / ${MAX_PARTICLES}`, 12, H - 12);
+        }
+
+        // --- Game Loop ---
+        let lastTime = 0;
+        const FIXED_DT = 1000 / 60;
+        let accumulator = 0;
+
+        function loop(timestamp) {
+            if (lastTime === 0) lastTime = timestamp;
+            const elapsed = Math.min(timestamp - lastTime, 100); // cap
+            lastTime = timestamp;
+            accumulator += elapsed;
+
+            // Spawn while pointer is down
+            if (pointerDown) {
+                if (shiftHeld) {
+                    addWallBlock(pointerX, pointerY);
+                } else {
+                    spawnAt(pointerX, pointerY, SPAWN_RATE);
+                }
+            }
+
+            while (accumulator >= FIXED_DT) {
+                simulate();
+                accumulator -= FIXED_DT;
+            }
+
+            render();
+            requestAnimationFrame(loop);
+        }
+
+        // --- Input ---
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const sx = canvas.width / rect.width;
+            const sy = canvas.height / rect.height;
+            const cx = e.touches ? e.touches[0].clientX : e.clientX;
+            const cy = e.touches ? e.touches[0].clientY : e.clientY;
+            return { x: (cx - rect.left) * sx, y: (cy - rect.top) * sy };
+        }
+
+        canvas.addEventListener('mousedown', e => {
+            pointerDown = true;
+            const p = getPos(e);
+            pointerX = p.x; pointerY = p.y;
+        });
+        canvas.addEventListener('mousemove', e => {
+            const p = getPos(e);
+            pointerX = p.x; pointerY = p.y;
+        });
+        canvas.addEventListener('mouseup', () => { pointerDown = false; });
+        canvas.addEventListener('mouseleave', () => { pointerDown = false; });
+        canvas.addEventListener('touchstart', e => {
+            e.preventDefault();
+            pointerDown = true;
+            const p = getPos(e);
+            pointerX = p.x; pointerY = p.y;
+        }, { passive: false });
+        canvas.addEventListener('touchmove', e => {
+            e.preventDefault();
+            const p = getPos(e);
+            pointerX = p.x; pointerY = p.y;
+        }, { passive: false });
+        canvas.addEventListener('touchend', () => { pointerDown = false; });
+
+        window.addEventListener('keydown', e => { if (e.key === 'Shift') shiftHeld = true; });
+        window.addEventListener('keyup', e => { if (e.key === 'Shift') shiftHeld = false; });
+
+        // --- Controls ---
+        const gravSlider = document.getElementById('gravity');
+        const sizeSlider = document.getElementById('particle-size');
+        const rateSlider = document.getElementById('spawn-rate');
+        const viscSlider = document.getElementById('viscosity');
+
+        gravSlider.addEventListener('input', () => {
+            GRAVITY = parseFloat(gravSlider.value);
+            document.getElementById('gravity-val').textContent = gravSlider.value;
+        });
+        sizeSlider.addEventListener('input', () => {
+            RADIUS = parseFloat(sizeSlider.value);
+            document.getElementById('particle-size-val').textContent = sizeSlider.value;
+        });
+        rateSlider.addEventListener('input', () => {
+            SPAWN_RATE = parseInt(rateSlider.value);
+            document.getElementById('spawn-rate-val').textContent = rateSlider.value;
+        });
+        viscSlider.addEventListener('input', () => {
+            VISCOSITY = parseInt(viscSlider.value) / 100;
+            document.getElementById('viscosity-val').textContent = viscSlider.value;
+        });
+
+        document.getElementById('reset').addEventListener('click', () => {
+            particles = [];
+            walls = [];
+        });
+
+        requestAnimationFrame(loop);
+    })();
+    </script>
+</body>
+</html>
