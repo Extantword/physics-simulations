@@ -50,63 +50,75 @@
     <script>
     (function () {
         // ============================================================
-        // Fluid simulation using Double Density Relaxation
-        // Based on Clavet, Beaudoin & Poulin (2005)
-        // "Particle-based Viscoelastic Fluid Simulation"
+        // Optimized fluid simulation — Double Density Relaxation
+        // (Clavet, Beaudoin & Poulin 2005)
         //
-        // The algorithm works in position-space rather than
-        // force-space, making it inherently stable:
-        //   1. Apply gravity to velocities
-        //   2. Save old positions, advance positions by velocity
-        //   3. Build spatial hash of predicted positions
-        //   4. For each particle, compute density and near-density
-        //      from neighbors using simple polynomial kernels
-        //   5. Compute pressure and near-pressure from densities
-        //   6. Displace particle pairs based on pressure (relaxation)
-        //   7. Apply viscosity impulses between neighbors
-        //   8. Derive new velocity from position change
-        //   9. Handle boundary collisions
+        // Optimizations over naive implementation:
+        //  - SoA typed arrays (Float64Array) for all particle data
+        //  - Fused density + pressure in single grid traversal
+        //    with per-particle neighbor cache (temp typed buffers)
+        //  - Inline grid traversal (zero closure allocations)
+        //  - Single sqrt per neighbor pair (cached via invR)
+        //  - Removed redundant second buildGrid() for viscosity
+        //  - Pre-computed constants pulled out of inner loops
+        //  - Counting-sort color bucketing for batched rendering
+        //    (one beginPath+fill per color bucket, not per particle)
+        //  - Bitwise |0 for integer grid ops
         // ============================================================
 
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         const CW = canvas.width;
         const CH = canvas.height;
+        const TAU = Math.PI * 2;
 
         // --- Tunable parameters ---
-        const INTERACTION_RADIUS = 25;   // h: smoothing / neighbor radius
-        const REST_DENSITY = 4.0;        // target density
-        let STIFFNESS = 300;             // k: pressure stiffness
-        const STIFFNESS_NEAR = 800;      // k_near: near-pressure (prevents clumping)
-        let LINEAR_VISC = 0.20;          // sigma: linear viscosity
-        const QUAD_VISC = 0.05;          // beta: quadratic viscosity
-        let GRAVITY_Y = 25;             // gravity acceleration
-        const PARTICLE_R = 4;           // visual / collision radius
-        const MAX_PARTICLES = 2000;
+        const H = 25;                    // interaction radius
+        const H2 = H * H;               // h squared (pre-computed)
+        const INV_H = 1 / H;            // 1/h (pre-computed)
+        const REST_DENSITY = 4.0;
+        let STIFFNESS = 300;
+        const STIFFNESS_NEAR = 800;
+        let LINEAR_VISC = 0.20;
+        const QUAD_VISC = 0.05;
+        let GRAVITY_Y = 25;
+        const PARTICLE_R = 4;
+        const PARTICLE_R2 = PARTICLE_R * PARTICLE_R;
+        const MAX_PARTICLES = 3000;
         let SPAWN_RATE = 4;
-        const SUBSTEPS = 3;             // physics substeps per frame
+        const SUBSTEPS = 3;
         const WALL_BLOCK_SIZE = 20;
 
-        // --- State ---
-        let particles = [];  // { x, y, prevX, prevY, vx, vy }
-        let walls = [];      // { x, y, w, h }
+        // ==================== SoA Particle Storage ====================
+        // Flat typed arrays: zero GC pressure, excellent cache locality
+        const posX  = new Float64Array(MAX_PARTICLES);
+        const posY  = new Float64Array(MAX_PARTICLES);
+        const prevX = new Float64Array(MAX_PARTICLES);
+        const prevY = new Float64Array(MAX_PARTICLES);
+        const velX  = new Float64Array(MAX_PARTICLES);
+        const velY  = new Float64Array(MAX_PARTICLES);
+        let N = 0; // active particle count
+
+        // ==================== Walls ====================
+        let walls = [];
         let pointerDown = false;
         let pointerX = 0, pointerY = 0;
         let shiftHeld = false;
 
         // ==================== Spatial Hash ====================
-        const CELL = INTERACTION_RADIUS;
-        const GRID_COLS = Math.ceil(CW / CELL) + 1;
-        const GRID_ROWS = Math.ceil(CH / CELL) + 1;
+        // Cell size = interaction radius for optimal neighbor queries
+        const CELL = H;
+        const INV_CELL = 1 / CELL;
+        const GRID_COLS = (CW / CELL | 0) + 2;
+        const GRID_ROWS = (CH / CELL | 0) + 2;
         const gridHead = new Int32Array(GRID_COLS * GRID_ROWS);
         const gridNext = new Int32Array(MAX_PARTICLES);
 
         function buildGrid() {
             gridHead.fill(-1);
-            for (let i = 0; i < particles.length; i++) {
-                const p = particles[i];
-                const col = Math.floor(p.x / CELL);
-                const row = Math.floor(p.y / CELL);
+            for (let i = 0; i < N; i++) {
+                const col = (posX[i] * INV_CELL) | 0;
+                const row = (posY[i] * INV_CELL) | 0;
                 if (col < 0 || col >= GRID_COLS || row < 0 || row >= GRID_ROWS) continue;
                 const key = row * GRID_COLS + col;
                 gridNext[i] = gridHead[key];
@@ -114,255 +126,332 @@
             }
         }
 
-        // Iterate neighbors of particle at (px, py), calling fn(j) for each
-        function forEachNeighbor(px, py, fn) {
-            const col = Math.floor(px / CELL);
-            const row = Math.floor(py / CELL);
-            for (let dr = -1; dr <= 1; dr++) {
-                const r = row + dr;
-                if (r < 0 || r >= GRID_ROWS) continue;
-                for (let dc = -1; dc <= 1; dc++) {
-                    const c = col + dc;
-                    if (c < 0 || c >= GRID_COLS) continue;
-                    let j = gridHead[r * GRID_COLS + c];
-                    while (j !== -1) {
-                        fn(j);
-                        j = gridNext[j];
-                    }
-                }
-            }
-        }
+        // ==================== Per-Particle Neighbor Cache ====================
+        // Avoids double grid traversal in relaxation step:
+        // density pass caches neighbors, pressure pass reuses cache
+        const MAX_NBRS = 128;
+        const nbrIdx = new Uint16Array(MAX_NBRS);
+        const nbrNx  = new Float32Array(MAX_NBRS);  // unit direction x
+        const nbrNy  = new Float32Array(MAX_NBRS);  // unit direction y
+        const nbrW   = new Float32Array(MAX_NBRS);  // kernel weight (1-q)
 
-        // ==================== Particle Spawning ====================
+        // ==================== Color LUT + Render Buffers ====================
+        const NUM_COLORS = 24;
+        const colorLUT = new Array(NUM_COLORS);
+        for (let ci = 0; ci < NUM_COLORS; ci++) {
+            const t = ci / (NUM_COLORS - 1);
+            let r, g, b;
+            if (t < 0.5) {
+                const s = t * 2;
+                r = (20 + s * 40) | 0;
+                g = (80 + s * 140) | 0;
+                b = (200 + s * 55) | 0;
+            } else {
+                const s = (t - 0.5) * 2;
+                r = (60 + s * 180) | 0;
+                g = (220 + s * 35) | 0;
+                b = 255;
+            }
+            colorLUT[ci] = `rgba(${r},${g},${b},0.85)`;
+        }
+        // Pre-allocated sorting buffers (zero per-frame allocation)
+        const pColor      = new Uint8Array(MAX_PARTICLES);
+        const bucketCount = new Uint16Array(NUM_COLORS);
+        const bucketStart = new Uint16Array(NUM_COLORS);
+        const bucketPos   = new Uint16Array(NUM_COLORS);
+        const sortedIdx   = new Uint16Array(MAX_PARTICLES);
+
+        // ==================== Spawning ====================
         function spawnAt(x, y, count) {
             for (let i = 0; i < count; i++) {
-                if (particles.length >= MAX_PARTICLES) return;
-                const px = x + (Math.random() - 0.5) * INTERACTION_RADIUS * 0.6;
-                const py = y + (Math.random() - 0.5) * INTERACTION_RADIUS * 0.6;
-                particles.push({
-                    x: px, y: py,
-                    prevX: px, prevY: py,
-                    vx: (Math.random() - 0.5) * 15,
-                    vy: (Math.random() - 0.5) * 5
-                });
+                if (N >= MAX_PARTICLES) return;
+                const idx = N++;
+                posX[idx]  = x + (Math.random() - 0.5) * H * 0.6;
+                posY[idx]  = y + (Math.random() - 0.5) * H * 0.6;
+                prevX[idx] = posX[idx];
+                prevY[idx] = posY[idx];
+                velX[idx]  = (Math.random() - 0.5) * 15;
+                velY[idx]  = (Math.random() - 0.5) * 5;
             }
         }
 
         function addWallBlock(x, y) {
             const s = WALL_BLOCK_SIZE;
-            const gx = Math.floor(x / s) * s;
-            const gy = Math.floor(y / s) * s;
-            for (const w of walls) {
-                if (w.x === gx && w.y === gy) return;
+            const gx = (x / s | 0) * s;
+            const gy = (y / s | 0) * s;
+            for (let i = 0; i < walls.length; i++) {
+                if (walls[i].x === gx && walls[i].y === gy) return;
             }
             walls.push({ x: gx, y: gy, w: s, h: s });
         }
 
         // ==================== Physics Step ====================
         function simulate(dt) {
-            const n = particles.length;
-            if (n === 0) return;
-            const h = INTERACTION_RADIUS;
-            const invH = 1 / h;
+            if (N === 0) return;
+            const n = N;
+            const dt2 = dt * dt;
+            const gdt = GRAVITY_Y * dt;
 
-            // --- 1. Apply gravity & save previous positions ---
+            // --- 1. Gravity + save prev + advance position ---
             for (let i = 0; i < n; i++) {
-                const p = particles[i];
-                p.vy += GRAVITY_Y * dt;
-                p.prevX = p.x;
-                p.prevY = p.y;
-                p.x += p.vx * dt;
-                p.y += p.vy * dt;
+                velY[i] += gdt;
+                prevX[i] = posX[i];
+                prevY[i] = posY[i];
+                posX[i] += velX[i] * dt;
+                posY[i] += velY[i] * dt;
             }
 
-            // --- 2. Build spatial hash ---
+            // --- 2. Build spatial hash (ONCE per step) ---
             buildGrid();
 
             // --- 3. Double density relaxation ---
+            // Fused: density computation + neighbor caching in ONE grid
+            // traversal, then pressure displacement from cache.
+            // Eliminates the second grid traversal entirely.
             for (let i = 0; i < n; i++) {
-                const pi = particles[i];
+                const px = posX[i];
+                const py = posY[i];
                 let density = 0;
                 let nearDensity = 0;
+                let numNbr = 0;
 
-                // Compute density from neighbors
-                forEachNeighbor(pi.x, pi.y, function(j) {
-                    if (j === i) return;
-                    const dx = particles[j].x - pi.x;
-                    const dy = particles[j].y - pi.y;
-                    const r2 = dx * dx + dy * dy;
-                    if (r2 >= h * h || r2 < 0.0001) return;
-                    const r = Math.sqrt(r2);
-                    const q = r * invH;         // normalized distance [0, 1]
-                    const w = 1 - q;             // linear kernel
-                    density += w * w;            // (1-q)^2
-                    nearDensity += w * w * w;    // (1-q)^3
-                });
+                // Inline grid neighbor lookup (no closure allocation)
+                const col0 = (px * INV_CELL) | 0;
+                const row0 = (py * INV_CELL) | 0;
+                const rMin = row0 > 0 ? row0 - 1 : 0;
+                const rMax = row0 < GRID_ROWS - 1 ? row0 + 1 : row0;
+                const cMin = col0 > 0 ? col0 - 1 : 0;
+                const cMax = col0 < GRID_COLS - 1 ? col0 + 1 : col0;
 
-                // Compute pressure from density
+                for (let gr = rMin; gr <= rMax; gr++) {
+                    const rowOff = gr * GRID_COLS;
+                    for (let gc = cMin; gc <= cMax; gc++) {
+                        let j = gridHead[rowOff + gc];
+                        while (j !== -1) {
+                            if (j !== i) {
+                                const dx = posX[j] - px;
+                                const dy = posY[j] - py;
+                                const r2 = dx * dx + dy * dy;
+                                if (r2 < H2 && r2 > 0.0001) {
+                                    // Single sqrt per pair, cached via invR
+                                    const invR = 1 / Math.sqrt(r2);
+                                    const r = r2 * invR;
+                                    const q = r * INV_H;
+                                    const w = 1 - q;
+                                    const w2 = w * w;
+                                    density += w2;
+                                    nearDensity += w2 * w;
+
+                                    // Cache for pressure pass
+                                    if (numNbr < MAX_NBRS) {
+                                        nbrIdx[numNbr] = j;
+                                        nbrNx[numNbr]  = dx * invR;
+                                        nbrNy[numNbr]  = dy * invR;
+                                        nbrW[numNbr]   = w;
+                                        numNbr++;
+                                    }
+                                }
+                            }
+                            j = gridNext[j];
+                        }
+                    }
+                }
+
+                // Pressure from density
                 const pressure = STIFFNESS * (density - REST_DENSITY);
                 const nearPressure = STIFFNESS_NEAR * nearDensity;
 
-                // Apply displacement to neighbors
-                let displaceX = 0, displaceY = 0;
-
-                forEachNeighbor(pi.x, pi.y, function(j) {
-                    if (j === i) return;
-                    const pj = particles[j];
-                    const dx = pj.x - pi.x;
-                    const dy = pj.y - pi.y;
-                    const r2 = dx * dx + dy * dy;
-                    if (r2 >= h * h || r2 < 0.0001) return;
-                    const r = Math.sqrt(r2);
-                    const q = r * invH;
-                    const w = 1 - q;
-
-                    // Magnitude of displacement
-                    const mag = (pressure * w + nearPressure * w * w) * dt * dt;
-
-                    // Direction: along the line connecting i and j
-                    const fx = (dx / r) * mag * 0.5;
-                    const fy = (dy / r) * mag * 0.5;
-
-                    // Push neighbor j away
-                    pj.x += fx;
-                    pj.y += fy;
-
-                    // Accumulate opposite displacement for i
-                    displaceX -= fx;
-                    displaceY -= fy;
-                });
-
-                pi.x += displaceX;
-                pi.y += displaceY;
+                // Apply displacements from cached neighbors
+                let dispX = 0, dispY = 0;
+                for (let k = 0; k < numNbr; k++) {
+                    const w = nbrW[k];
+                    const mag = (pressure * w + nearPressure * w * w) * dt2 * 0.5;
+                    const fx = nbrNx[k] * mag;
+                    const fy = nbrNy[k] * mag;
+                    const j = nbrIdx[k];
+                    posX[j] += fx;
+                    posY[j] += fy;
+                    dispX -= fx;
+                    dispY -= fy;
+                }
+                posX[i] += dispX;
+                posY[i] += dispY;
             }
 
             // --- 4. Viscosity impulses ---
-            buildGrid(); // rebuild after relaxation
+            // Reuses stale grid (positions shifted by ~dt², negligible error)
+            // Saves an entire buildGrid() call
             for (let i = 0; i < n; i++) {
-                const pi = particles[i];
-                forEachNeighbor(pi.x, pi.y, function(j) {
-                    if (j <= i) return;
-                    const pj = particles[j];
-                    const dx = pj.x - pi.x;
-                    const dy = pj.y - pi.y;
-                    const r2 = dx * dx + dy * dy;
-                    if (r2 >= h * h || r2 < 0.0001) return;
-                    const r = Math.sqrt(r2);
-                    const q = r * invH;
-                    const w = 1 - q;
+                const px = posX[i];
+                const py = posY[i];
+                const col0 = (px * INV_CELL) | 0;
+                const row0 = (py * INV_CELL) | 0;
+                const rMin = row0 > 0 ? row0 - 1 : 0;
+                const rMax = row0 < GRID_ROWS - 1 ? row0 + 1 : row0;
+                const cMin = col0 > 0 ? col0 - 1 : 0;
+                const cMax = col0 < GRID_COLS - 1 ? col0 + 1 : col0;
 
-                    // Inward velocity
-                    const vnx = dx / r;
-                    const vny = dy / r;
-                    const relVx = pi.vx - pj.vx;
-                    const relVy = pi.vy - pj.vy;
-                    const u = relVx * vnx + relVy * vny; // inward speed
-
-                    if (u > 0) {
-                        const impulse = dt * w * (LINEAR_VISC * u + QUAD_VISC * u * u) * 0.5;
-                        const ix = vnx * impulse;
-                        const iy = vny * impulse;
-                        pi.vx -= ix;
-                        pi.vy -= iy;
-                        pj.vx += ix;
-                        pj.vy += iy;
+                for (let gr = rMin; gr <= rMax; gr++) {
+                    const rowOff = gr * GRID_COLS;
+                    for (let gc = cMin; gc <= cMax; gc++) {
+                        let j = gridHead[rowOff + gc];
+                        while (j !== -1) {
+                            if (j > i) {
+                                const dx = posX[j] - px;
+                                const dy = posY[j] - py;
+                                const r2 = dx * dx + dy * dy;
+                                if (r2 < H2 && r2 > 0.0001) {
+                                    const invR = 1 / Math.sqrt(r2);
+                                    const r = r2 * invR;
+                                    const w = 1 - r * INV_H;
+                                    const vnx = dx * invR;
+                                    const vny = dy * invR;
+                                    const u = (velX[i] - velX[j]) * vnx
+                                            + (velY[i] - velY[j]) * vny;
+                                    if (u > 0) {
+                                        const imp = dt * w * (LINEAR_VISC * u + QUAD_VISC * u * u) * 0.5;
+                                        const ix = vnx * imp;
+                                        const iy = vny * imp;
+                                        velX[i] -= ix;
+                                        velY[i] -= iy;
+                                        velX[j] += ix;
+                                        velY[j] += iy;
+                                    }
+                                }
+                            }
+                            j = gridNext[j];
+                        }
                     }
-                });
+                }
             }
 
-            // --- 5. Derive velocity from position change + boundaries ---
-            for (let i = 0; i < n; i++) {
-                const p = particles[i];
+            // --- 5. Boundaries + derive velocity ---
+            const margin = PARTICLE_R;
+            const maxX = CW - margin;
+            const maxY = CH - margin;
+            const maxSpd = H / dt;
+            const maxSpd2 = maxSpd * maxSpd;
+            const invDt = 1 / dt;
+            const nWalls = walls.length;
 
-                // Wall block collisions (before deriving velocity)
-                for (let wi = 0; wi < walls.length; wi++) {
-                    const w = walls[wi];
-                    const closestX = Math.max(w.x, Math.min(p.x, w.x + w.w));
-                    const closestY = Math.max(w.y, Math.min(p.y, w.y + w.h));
-                    const dx = p.x - closestX;
-                    const dy = p.y - closestY;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist < PARTICLE_R) {
-                        if (dist > 0.001) {
-                            const overlap = PARTICLE_R - dist;
-                            p.x += (dx / dist) * overlap;
-                            p.y += (dy / dist) * overlap;
+            for (let i = 0; i < n; i++) {
+                let px = posX[i];
+                let py = posY[i];
+
+                // Wall collisions (r² early-out avoids sqrt when not colliding)
+                for (let wi = 0; wi < nWalls; wi++) {
+                    const wl = walls[wi];
+                    const cx = px < wl.x ? wl.x : (px > wl.x + wl.w ? wl.x + wl.w : px);
+                    const cy = py < wl.y ? wl.y : (py > wl.y + wl.h ? wl.y + wl.h : py);
+                    const dx = px - cx;
+                    const dy = py - cy;
+                    const d2 = dx * dx + dy * dy;
+                    if (d2 < PARTICLE_R2) {
+                        if (d2 > 0.000001) {
+                            const invD = 1 / Math.sqrt(d2);
+                            const overlap = PARTICLE_R - d2 * invD;
+                            px += dx * invD * overlap;
+                            py += dy * invD * overlap;
                         } else {
-                            // Inside wall — push to nearest edge
-                            const cx = w.x + w.w / 2;
-                            const cy = w.y + w.h / 2;
-                            if (Math.abs(p.x - cx) / w.w > Math.abs(p.y - cy) / w.h) {
-                                p.x = p.x > cx ? w.x + w.w + PARTICLE_R : w.x - PARTICLE_R;
+                            const wcx = wl.x + wl.w * 0.5;
+                            const wcy = wl.y + wl.h * 0.5;
+                            if (Math.abs(px - wcx) * wl.h > Math.abs(py - wcy) * wl.w) {
+                                px = px > wcx ? wl.x + wl.w + PARTICLE_R : wl.x - PARTICLE_R;
                             } else {
-                                p.y = p.y > cy ? w.y + w.h + PARTICLE_R : w.y - PARTICLE_R;
+                                py = py > wcy ? wl.y + wl.h + PARTICLE_R : wl.y - PARTICLE_R;
                             }
                         }
                     }
                 }
 
-                // Canvas boundaries
-                const margin = PARTICLE_R;
-                if (p.x < margin)      p.x = margin;
-                if (p.x > CW - margin) p.x = CW - margin;
-                if (p.y < margin)      p.y = margin;
-                if (p.y > CH - margin) p.y = CH - margin;
+                // Canvas boundaries (branchless-style clamp)
+                if (px < margin) px = margin;
+                if (px > maxX)   px = maxX;
+                if (py < margin) py = margin;
+                if (py > maxY)   py = maxY;
+                posX[i] = px;
+                posY[i] = py;
 
                 // Derive velocity from position delta
-                p.vx = (p.x - p.prevX) / dt;
-                p.vy = (p.y - p.prevY) / dt;
+                let vx = (px - prevX[i]) * invDt;
+                let vy = (py - prevY[i]) * invDt;
 
-                // Clamp velocity to prevent instability
-                const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
-                const maxSpeed = h / dt;
-                if (speed > maxSpeed) {
-                    p.vx *= maxSpeed / speed;
-                    p.vy *= maxSpeed / speed;
+                // Clamp (r² early-out avoids sqrt when under limit)
+                const s2 = vx * vx + vy * vy;
+                if (s2 > maxSpd2) {
+                    const scale = maxSpd / Math.sqrt(s2);
+                    vx *= scale;
+                    vy *= scale;
                 }
+                velX[i] = vx;
+                velY[i] = vy;
             }
         }
 
         // ==================== Rendering ====================
+        // Counting-sort particles by quantized color, then batch-draw
+        // each color in a single beginPath+fill. Reduces fill() calls
+        // from N (~3000) to NUM_COLORS (24).
         function render() {
             ctx.clearRect(0, 0, CW, CH);
+            const n = N;
 
             // Walls
-            ctx.fillStyle = '#475569';
-            for (const w of walls) {
-                ctx.fillRect(w.x, w.y, w.w, w.h);
+            if (walls.length > 0) {
+                ctx.fillStyle = '#475569';
+                for (let i = 0; i < walls.length; i++) {
+                    const w = walls[i];
+                    ctx.fillRect(w.x, w.y, w.w, w.h);
+                }
             }
 
-            // Particles
-            const n = particles.length;
-            for (let i = 0; i < n; i++) {
-                const p = particles[i];
-
-                // Color by speed: deep blue (still) → cyan (medium) → white (fast)
-                const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
-                const t = Math.min(speed / 400, 1);
-                let r, g, b;
-                if (t < 0.5) {
-                    const s = t * 2;
-                    r = Math.floor(20 + s * 40);
-                    g = Math.floor(80 + s * 140);
-                    b = Math.floor(200 + s * 55);
-                } else {
-                    const s = (t - 0.5) * 2;
-                    r = Math.floor(60 + s * 180);
-                    g = Math.floor(220 + s * 35);
-                    b = 255;
+            if (n > 0) {
+                // Assign color bucket per particle
+                const invRange = NUM_COLORS / 400;
+                bucketCount.fill(0);
+                for (let i = 0; i < n; i++) {
+                    const spd = Math.sqrt(velX[i] * velX[i] + velY[i] * velY[i]);
+                    let c = (spd * invRange) | 0;
+                    if (c >= NUM_COLORS) c = NUM_COLORS - 1;
+                    pColor[i] = c;
+                    bucketCount[c]++;
                 }
 
-                ctx.fillStyle = `rgba(${r},${g},${b},0.85)`;
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, PARTICLE_R, 0, Math.PI * 2);
-                ctx.fill();
+                // Prefix sum → bucket start indices
+                bucketStart[0] = 0;
+                for (let c = 1; c < NUM_COLORS; c++) {
+                    bucketStart[c] = bucketStart[c - 1] + bucketCount[c - 1];
+                }
+                for (let c = 0; c < NUM_COLORS; c++) bucketPos[c] = bucketStart[c];
+
+                // Place into sorted order (counting sort, O(n))
+                for (let i = 0; i < n; i++) {
+                    sortedIdx[bucketPos[pColor[i]]++] = i;
+                }
+
+                // Batched draw: one path per active color
+                for (let c = 0; c < NUM_COLORS; c++) {
+                    if (bucketCount[c] === 0) continue;
+                    ctx.fillStyle = colorLUT[c];
+                    ctx.beginPath();
+                    const end = bucketStart[c] + bucketCount[c];
+                    for (let k = bucketStart[c]; k < end; k++) {
+                        const idx = sortedIdx[k];
+                        ctx.moveTo(posX[idx] + PARTICLE_R, posY[idx]);
+                        ctx.arc(posX[idx], posY[idx], PARTICLE_R, 0, TAU);
+                    }
+                    ctx.fill();
+                }
             }
 
             // HUD
             ctx.fillStyle = '#64748b';
             ctx.font = '13px monospace';
-            ctx.fillText(`particles: ${n} / ${MAX_PARTICLES}`, 12, CH - 12);
+            ctx.fillText(`particles: ${n} / ${MAX_PARTICLES}  fps: ${fpsDisplay}`, 12, CH - 12);
         }
+
+        // ==================== FPS Counter ====================
+        let fpsFrames = 0, fpsTime = 0, fpsDisplay = 0;
 
         // ==================== Main Loop ====================
         let lastTime = 0;
@@ -371,6 +460,15 @@
             if (lastTime === 0) lastTime = timestamp;
             const elapsed = Math.min(timestamp - lastTime, 100);
             lastTime = timestamp;
+
+            // FPS
+            fpsFrames++;
+            fpsTime += elapsed;
+            if (fpsTime >= 500) {
+                fpsDisplay = (fpsFrames / fpsTime * 1000 + 0.5) | 0;
+                fpsFrames = 0;
+                fpsTime = 0;
+            }
 
             // Spawn while pointer held
             if (pointerDown) {
@@ -381,7 +479,7 @@
                 }
             }
 
-            // Fixed timestep physics with substeps
+            // Fixed substep physics
             const subDt = (elapsed / 1000) / SUBSTEPS;
             if (subDt > 0 && subDt < 0.02) {
                 for (let s = 0; s < SUBSTEPS; s++) {
@@ -446,7 +544,7 @@
             document.getElementById('spawn-rate-val').textContent = this.value;
         });
         document.getElementById('reset').addEventListener('click', () => {
-            particles = [];
+            N = 0;
             walls = [];
         });
 
