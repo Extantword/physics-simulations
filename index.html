@@ -20,6 +20,13 @@
                 <h2>Simple Pendulum</h2>
                 <p>Explore the motion of a pendulum and how gravity, length, and damping affect its swing.</p>
             </a>
+            <a href="simulations/fluid/index.html" class="sim-card">
+                <div class="sim-preview">
+                    <canvas id="fluid-preview" width="280" height="180"></canvas>
+                </div>
+                <h2>Fluid Mechanics</h2>
+                <p>Click to create water and watch particles flow with realistic pressure, viscosity, and gravity.</p>
+            </a>
         </section>
     </main>
     <footer>
@@ -61,6 +68,46 @@
                 angVel *= 0.999;
                 angle += angVel * dt;
 
+                requestAnimationFrame(draw);
+            }
+            draw();
+        })();
+    // Tiny animated preview for the fluid card
+        (function() {
+            const canvas = document.getElementById('fluid-preview');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const drops = [];
+            const W = canvas.width, H = canvas.height;
+
+            for (let i = 0; i < 60; i++) {
+                drops.push({
+                    x: 80 + Math.random() * 120,
+                    y: 20 + Math.random() * 40,
+                    vx: (Math.random() - 0.5) * 20,
+                    vy: Math.random() * 10,
+                    r: 3 + Math.random() * 2
+                });
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, W, H);
+                for (const d of drops) {
+                    d.vy += 4 * 0.016 * 60;
+                    d.x += d.vx * 0.016;
+                    d.y += d.vy * 0.016;
+                    if (d.y > H - d.r) { d.y = H - d.r; d.vy *= -0.4; d.vx *= 0.95; }
+                    if (d.x < d.r) { d.x = d.r; d.vx *= -0.5; }
+                    if (d.x > W - d.r) { d.x = W - d.r; d.vx *= -0.5; }
+                    const speed = Math.sqrt(d.vx * d.vx + d.vy * d.vy);
+                    const t = Math.min(speed / 150, 1);
+                    const g = Math.floor(100 + t * 155);
+                    const b = Math.floor(220 + t * 35);
+                    ctx.fillStyle = `rgba(30,${g},${b},0.8)`;
+                    ctx.beginPath();
+                    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+                    ctx.fill();
+                }
                 requestAnimationFrame(draw);
             }
             draw();
