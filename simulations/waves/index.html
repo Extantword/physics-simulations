@@ -4,240 +4,295 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Wave Interference (ASCII) - Physics Simulations</title>
-    <link rel="stylesheet" href="../../style.css">
     <style>
-        body.sim-page { background: #050608; }
-        .sim-page header { border-bottom: 1px solid #1a3a1a; }
-        .sim-page header h1 {
-            color: #40cc80;
-            font-family: 'Courier New', Courier, monospace;
-            text-shadow: 0 0 10px rgba(64, 204, 128, 0.3);
-        }
-        .back-link { color: #40aa70; border-color: #1a3a1a; }
-        .back-link:hover { color: #60ffaa; border-color: #40aa70; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #050608; }
         #canvas {
+            display: block;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
             cursor: crosshair;
             touch-action: none;
-            border-color: #1a3a1a !important;
-            border-radius: 2px !important;
         }
-        .info {
+
+        /* Floating header */
+        header {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.6rem 1rem;
+            background: rgba(5,6,8,0.8);
+            border-bottom: 1px solid #1a3a1a;
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+        }
+        header h1 {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #40cc80;
+            font-family: 'Courier New', Courier, monospace;
+            text-shadow: 0 0 10px rgba(64,204,128,0.3);
+        }
+        .back-link {
+            color: #40aa70;
+            text-decoration: none;
+            font-size: 0.85rem;
+            border: 1px solid #1a3a1a;
+            padding: 0.3rem 0.6rem;
+            border-radius: 3px;
+            font-family: 'Courier New', Courier, monospace;
+            white-space: nowrap;
+        }
+        .back-link:hover { color: #60ffaa; border-color: #40aa70; }
+        .help-text {
+            margin-left: auto;
             color: #2a6a4a;
-            font-size: 0.8rem;
-            text-align: center;
+            font-size: 0.75rem;
             font-family: 'Courier New', Courier, monospace;
         }
-        .info::before { content: '$ '; color: #40aa70; }
+        .help-text::before { content: '$ '; color: #40aa70; }
         kbd {
             background: #0a1a10;
             border: 1px solid #1a3a1a;
-            padding: 0.1rem 0.4rem;
+            padding: 0.05rem 0.35rem;
             border-radius: 2px;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
             color: #40cc80;
         }
+
+        /* Floating controls bar */
         .controls {
-            background: #080c08;
-            border-color: #1a3a1a;
-            border-radius: 2px;
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            z-index: 10;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 1.2rem;
+            padding: 0.6rem 1rem;
+            background: rgba(5,6,8,0.8);
+            border-top: 1px solid #1a3a1a;
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
         }
         .control-group label {
+            font-size: 0.7rem;
             color: #2a6a4a;
             font-family: 'Courier New', Courier, monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
         }
         .control-group span {
+            font-size: 0.75rem;
             color: #40cc80;
             font-family: 'Courier New', Courier, monospace;
+            min-width: 2.2em;
         }
-        input[type="range"] { accent-color: #40aa70; }
+        input[type="range"] { accent-color: #40aa70; width: 90px; }
         select {
             background: #0a1a10;
             color: #40cc80;
             border: 1px solid #1a3a1a;
-            padding: 0.3rem;
+            padding: 0.2rem;
             font-family: 'Courier New', Courier, monospace;
+            font-size: 0.75rem;
             border-radius: 2px;
         }
         button {
             background: #1a3a1a;
             color: #40cc80;
             border: 1px solid #2a5a3a;
+            padding: 0.35rem 0.9rem;
             font-family: 'Courier New', Courier, monospace;
+            font-size: 0.8rem;
             border-radius: 2px;
+            cursor: pointer;
         }
         button:hover { background: #2a5a3a; }
     </style>
 </head>
-<body class="sim-page">
+<body>
+    <canvas id="canvas"></canvas>
+
     <header>
         <a href="../../index.html" class="back-link">&larr; Back</a>
         <h1>Wave Interference</h1>
+        <span class="help-text">click to drop a stone &middot; hold for continuous wave &middot; <kbd>Shift</kbd>+click to pin a source</span>
     </header>
 
-    <div class="sim-container">
-        <canvas id="canvas" width="800" height="490"></canvas>
-        <p class="info">click to drop a stone &middot; hold for continuous wave &middot; <kbd>Shift</kbd>+click to pin a source</p>
-
-        <div class="controls">
-            <div class="control-group">
-                <label>Speed</label>
-                <input type="range" id="speed" min="1" max="8" value="4" step="1">
-                <span id="speed-val">4</span>
-            </div>
-            <div class="control-group">
-                <label>Damping</label>
-                <input type="range" id="damping" min="985" max="1000" value="996" step="1">
-                <span id="damping-val">0.996</span>
-            </div>
-            <div class="control-group">
-                <label>Frequency</label>
-                <input type="range" id="freq" min="5" max="40" value="15" step="1">
-                <span id="freq-val">0.15</span>
-            </div>
-            <div class="control-group">
-                <label>Boundary</label>
-                <select id="boundary">
-                    <option value="absorb">Absorb</option>
-                    <option value="reflect">Reflect</option>
-                </select>
-            </div>
-            <button id="reset">Clear</button>
+    <div class="controls">
+        <div class="control-group">
+            <label>Speed</label>
+            <input type="range" id="speed" min="1" max="8" value="4" step="1">
+            <span id="speed-val">4</span>
         </div>
+        <div class="control-group">
+            <label>Damping</label>
+            <input type="range" id="damping" min="985" max="1000" value="996" step="1">
+            <span id="damping-val">0.996</span>
+        </div>
+        <div class="control-group">
+            <label>Frequency</label>
+            <input type="range" id="freq" min="5" max="40" value="15" step="1">
+            <span id="freq-val">0.15</span>
+        </div>
+        <div class="control-group">
+            <label>Boundary</label>
+            <select id="boundary">
+                <option value="absorb">Absorb</option>
+                <option value="reflect">Reflect</option>
+            </select>
+        </div>
+        <button id="reset">Clear</button>
     </div>
 
     <script>
     (function () {
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-        const CW = canvas.width;
-        const CH = canvas.height;
+        var canvas = document.getElementById('canvas');
+        var ctx = canvas.getContext('2d');
 
-        // ==================== Grid ====================
-        const COLS = 100;
-        const ROWS = 35;
-        const CELL_W = CW / COLS;           // 8
-        const CELL_H = CH / ROWS;           // 14
-        const GRID_SIZE = COLS * ROWS;
+        // ==================== Constants ====================
+        var CELL_W = 8;
+        var CELL_H = 14;
+        var WAVE_C = 0.35;
+        var IMPULSE_AMP = 1.5;
+        var IMPULSE_SIGMA = 2.5;
+        var SOURCE_AMP = 0.4;
+        var CHARS = ' .,-~:;=!*#@';
+        var NUM_CHARS = CHARS.length;
+        var NUM_CLR = 64;
 
-        // ==================== Wave Parameters ====================
-        const WAVE_C = 0.35;                // propagation speed (cells/step)
-        let substeps = 4;                   // simulation steps per frame
-        let dampingFactor = 0.996;
-        let absorbBoundary = true;
-        let sourceFreq = 0.15;              // radians per sim step
-        const IMPULSE_AMP = 1.5;
-        const IMPULSE_SIGMA = 2.5;
-        const SOURCE_AMP = 0.4;
+        // ==================== Mutable state ====================
+        var substeps = 4;
+        var dampingFactor = 0.996;
+        var absorbBoundary = true;
+        var sourceFreq = 0.15;
+        var pinnedSources = [];
+        var simTime = 0;
+        var pointerDown = false;
+        var pointerX = 0, pointerY = 0;
+        var shiftHeld = false;
+        var fpsFrames = 0, fpsTime = 0, fpsDisplay = 0;
+        var lastTime = 0;
 
-        // ==================== Wave Buffers (3, rotated) ====================
-        const b0 = new Float32Array(GRID_SIZE);
-        const b1 = new Float32Array(GRID_SIZE);
-        const b2 = new Float32Array(GRID_SIZE);
-        let curr = b0, prev = b1, nxt = b2;
-        let simTime = 0;
-
-        // ==================== Pinned Sources ====================
-        let pinnedSources = [];
-
-        // ==================== Characters ====================
-        const CHARS = ' .,-~:;=!*#@';
-        const NUM_CHARS = CHARS.length;     // 12
+        // ==================== Dynamic grid state ====================
+        var CW, CH, COLS, ROWS, GRID_SIZE;
+        var curr, prev, nxt;
 
         // ==================== Color LUT ====================
-        // Two-tone terminal palette: troughs = cyan, crests = green
-        const NUM_CLR = 64;
-        const colorLUT = new Array(NUM_CLR);
-        for (let i = 0; i < NUM_CLR; i++) {
-            const t = (i / (NUM_CLR - 1)) * 2 - 1;  // -1 to 1
-            const s = Math.abs(t);
-            const s2 = s * s;
-            let r, g, b;
+        var colorLUT = new Array(NUM_CLR);
+        for (var i = 0; i < NUM_CLR; i++) {
+            var t = (i / (NUM_CLR - 1)) * 2 - 1;
+            var s = Math.abs(t);
+            var s2 = s * s;
+            var r, g, b;
             if (t <= 0) {
-                // Trough: dark -> cyan
                 r = Math.min(255, (s2 * 15) | 0);
                 g = Math.min(255, (s * 40 + s2 * 135) | 0);
                 b = Math.min(255, (s * 50 + s2 * 165) | 0);
             } else {
-                // Crest: dark -> green
                 r = Math.min(255, (s2 * 20) | 0);
                 g = Math.min(255, (s * 55 + s2 * 200) | 0);
                 b = Math.min(255, (s2 * 35) | 0);
             }
-            colorLUT[i] = `rgb(${r},${g},${b})`;
+            colorLUT[i] = 'rgb(' + r + ',' + g + ',' + b + ')';
         }
 
-        // ==================== Sprite Atlas ====================
-        // Pre-render each (character, color) combo for fast drawImage
-        const ATLAS_CW = Math.ceil(CELL_W);   // 8
-        const ATLAS_CH = Math.ceil(CELL_H);   // 14
-        const FONT_SIZE = (CELL_H * 0.82) | 0;
-        const atlas = document.createElement('canvas');
-        atlas.width = NUM_CHARS * ATLAS_CW;
-        atlas.height = NUM_CLR * ATLAS_CH;
-        const aCtx = atlas.getContext('2d');
-        aCtx.font = FONT_SIZE + 'px "Courier New",Courier,monospace';
-        aCtx.textAlign = 'center';
-        aCtx.textBaseline = 'middle';
-        for (let ci = 0; ci < NUM_CLR; ci++) {
-            aCtx.fillStyle = colorLUT[ci];
-            const cy = ci * ATLAS_CH + ATLAS_CH * 0.5;
-            for (let ch = 1; ch < NUM_CHARS; ch++) {
-                aCtx.fillText(CHARS[ch], ch * ATLAS_CW + ATLAS_CW * 0.5, cy);
+        // ==================== Sprite atlas ====================
+        var atlas = document.createElement('canvas');
+        var aCtx = atlas.getContext('2d');
+        var ATLAS_CW = CELL_W;
+        var ATLAS_CH = CELL_H;
+        var FONT_SIZE = (CELL_H * 0.82) | 0;
+
+        function buildAtlas() {
+            atlas.width = NUM_CHARS * ATLAS_CW;
+            atlas.height = NUM_CLR * ATLAS_CH;
+            aCtx.font = FONT_SIZE + 'px "Courier New",Courier,monospace';
+            aCtx.textAlign = 'center';
+            aCtx.textBaseline = 'middle';
+            for (var ci = 0; ci < NUM_CLR; ci++) {
+                aCtx.fillStyle = colorLUT[ci];
+                var cy = ci * ATLAS_CH + ATLAS_CH * 0.5;
+                for (var ch = 1; ch < NUM_CHARS; ch++) {
+                    aCtx.fillText(CHARS[ch], ch * ATLAS_CW + ATLAS_CW * 0.5, cy);
+                }
             }
         }
+        buildAtlas();
 
-        // ==================== Pointer State ====================
-        let pointerDown = false;
-        let pointerX = 0, pointerY = 0;
-        let shiftHeld = false;
+        // ==================== Resize ====================
+        function resize() {
+            var dpr = 1; // keep 1:1 for crisp ASCII
+            CW = canvas.width = window.innerWidth * dpr;
+            CH = canvas.height = window.innerHeight * dpr;
+            COLS = (CW / CELL_W) | 0;
+            ROWS = (CH / CELL_H) | 0;
+            GRID_SIZE = COLS * ROWS;
+
+            // Reallocate wave buffers (simulation resets)
+            curr = new Float32Array(GRID_SIZE);
+            prev = new Float32Array(GRID_SIZE);
+            nxt  = new Float32Array(GRID_SIZE);
+            pinnedSources = [];
+            simTime = 0;
+        }
+        resize();
+        window.addEventListener('resize', resize);
 
         // ==================== Wave Simulation ====================
         function step() {
-            const c2 = WAVE_C * WAVE_C;
-            for (let y = 1; y < ROWS - 1; y++) {
-                const rowOff = y * COLS;
-                for (let x = 1; x < COLS - 1; x++) {
-                    const idx = rowOff + x;
-                    const lap = curr[idx - 1] + curr[idx + 1]
-                              + curr[idx - COLS] + curr[idx + COLS]
-                              - 4 * curr[idx];
+            var c2 = WAVE_C * WAVE_C;
+            for (var y = 1; y < ROWS - 1; y++) {
+                var rowOff = y * COLS;
+                for (var x = 1; x < COLS - 1; x++) {
+                    var idx = rowOff + x;
+                    var lap = curr[idx - 1] + curr[idx + 1]
+                            + curr[idx - COLS] + curr[idx + COLS]
+                            - 4 * curr[idx];
                     nxt[idx] = (2 * curr[idx] - prev[idx] + c2 * lap) * dampingFactor;
                 }
             }
 
             if (absorbBoundary) {
-                // Zero boundary edges
-                for (let x = 0; x < COLS; x++) {
+                for (var x = 0; x < COLS; x++) {
                     nxt[x] = 0;
                     nxt[(ROWS - 1) * COLS + x] = 0;
                 }
-                for (let y = 0; y < ROWS; y++) {
+                for (var y = 0; y < ROWS; y++) {
                     nxt[y * COLS] = 0;
                     nxt[y * COLS + COLS - 1] = 0;
                 }
-                // Gradual damping zone (5 cells deep)
-                for (let y = 1; y < ROWS - 1; y++) {
-                    for (let x = 1; x < COLS - 1; x++) {
-                        const edge = Math.min(x, y, COLS - 1 - x, ROWS - 1 - y);
+                for (var y = 1; y < ROWS - 1; y++) {
+                    for (var x = 1; x < COLS - 1; x++) {
+                        var edge = Math.min(x, y, COLS - 1 - x, ROWS - 1 - y);
                         if (edge < 5) {
                             nxt[y * COLS + x] *= 0.5 + 0.1 * edge;
                         }
                     }
                 }
             } else {
-                // Reflecting: Neumann BC (copy from interior)
-                for (let x = 1; x < COLS - 1; x++) {
+                for (var x = 1; x < COLS - 1; x++) {
                     nxt[x] = nxt[COLS + x];
                     nxt[(ROWS - 1) * COLS + x] = nxt[(ROWS - 2) * COLS + x];
                 }
-                for (let y = 0; y < ROWS; y++) {
+                for (var y = 0; y < ROWS; y++) {
                     nxt[y * COLS] = nxt[y * COLS + 1];
                     nxt[y * COLS + COLS - 1] = nxt[y * COLS + COLS - 2];
                 }
             }
 
-            // Rotate buffers
-            const tmp = prev;
+            var tmp = prev;
             prev = curr;
             curr = nxt;
             nxt = tmp;
@@ -245,15 +300,15 @@
         }
 
         function addImpulse(gx, gy, amp) {
-            const s2 = IMPULSE_SIGMA * IMPULSE_SIGMA;
-            const range = (IMPULSE_SIGMA * 3 + 0.5) | 0;
-            const cx = Math.round(gx);
-            const cy = Math.round(gy);
-            for (let dy = -range; dy <= range; dy++) {
-                const y = cy + dy;
+            var s2 = IMPULSE_SIGMA * IMPULSE_SIGMA;
+            var range = (IMPULSE_SIGMA * 3 + 0.5) | 0;
+            var cx = Math.round(gx);
+            var cy = Math.round(gy);
+            for (var dy = -range; dy <= range; dy++) {
+                var y = cy + dy;
                 if (y < 0 || y >= ROWS) continue;
-                for (let dx = -range; dx <= range; dx++) {
-                    const x = cx + dx;
+                for (var dx = -range; dx <= range; dx++) {
+                    var x = cx + dx;
                     if (x < 0 || x >= COLS) continue;
                     curr[y * COLS + x] += amp * Math.exp(-(dx * dx + dy * dy) / (2 * s2));
                 }
@@ -261,17 +316,16 @@
         }
 
         function applySource(gx, gy) {
-            const amp = SOURCE_AMP * Math.sin(simTime * sourceFreq);
-            const s2 = 1.8 * 1.8;
-            const cx = Math.round(gx);
-            const cy = Math.round(gy);
-            for (let dy = -3; dy <= 3; dy++) {
-                const y = cy + dy;
+            var amp = SOURCE_AMP * Math.sin(simTime * sourceFreq);
+            var s2 = 1.8 * 1.8;
+            var cx = Math.round(gx);
+            var cy = Math.round(gy);
+            for (var dy = -3; dy <= 3; dy++) {
+                var y = cy + dy;
                 if (y < 0 || y >= ROWS) continue;
-                for (let dx = -3; dx <= 3; dx++) {
-                    const x = cx + dx;
+                for (var dx = -3; dx <= 3; dx++) {
+                    var x = cx + dx;
                     if (x < 0 || x >= COLS) continue;
-                    // Force wave height (= not +=) for continuous source
                     curr[y * COLS + x] = amp * Math.exp(-(dx * dx + dy * dy) / (2 * s2));
                 }
             }
@@ -282,21 +336,17 @@
             ctx.fillStyle = '#050608';
             ctx.fillRect(0, 0, CW, CH);
 
-            for (let y = 0; y < ROWS; y++) {
-                const dy = y * CELL_H;
-                for (let x = 0; x < COLS; x++) {
-                    const amp = curr[y * COLS + x];
+            for (var y = 0; y < ROWS; y++) {
+                var dy = y * CELL_H;
+                for (var x = 0; x < COLS; x++) {
+                    var amp = curr[y * COLS + x];
+                    var clamped = amp < -1 ? -1 : (amp > 1 ? 1 : amp);
+                    var absA = clamped < 0 ? -clamped : clamped;
 
-                    // Clamp to [-1, 1]
-                    const clamped = amp < -1 ? -1 : (amp > 1 ? 1 : amp);
-                    const absA = clamped < 0 ? -clamped : clamped;
+                    var ci = (absA * (NUM_CHARS - 1) + 0.5) | 0;
+                    if (ci === 0) continue;
 
-                    // Character from |amplitude|
-                    const ci = (absA * (NUM_CHARS - 1) + 0.5) | 0;
-                    if (ci === 0) continue;  // skip spaces
-
-                    // Color from signed amplitude
-                    const cli = ((clamped * 0.5 + 0.5) * (NUM_CLR - 1) + 0.5) | 0;
+                    var cli = ((clamped * 0.5 + 0.5) * (NUM_CLR - 1) + 0.5) | 0;
 
                     ctx.drawImage(atlas,
                         ci * ATLAS_CW, cli * ATLAS_CH, ATLAS_CW, ATLAS_CH,
@@ -307,7 +357,7 @@
 
             // CRT scanlines
             ctx.fillStyle = 'rgba(0,0,0,0.06)';
-            for (let sy = 0; sy < CH; sy += 3) {
+            for (var sy = 0; sy < CH; sy += 3) {
                 ctx.fillRect(0, sy, CW, 1);
             }
 
@@ -316,7 +366,7 @@
                 ctx.fillStyle = '#40cc80';
                 ctx.font = '12px "Courier New",monospace';
                 ctx.textBaseline = 'top';
-                for (let i = 0; i < pinnedSources.length; i++) {
+                for (var i = 0; i < pinnedSources.length; i++) {
                     ctx.fillText('+', pinnedSources[i].gx * CELL_W + 1, pinnedSources[i].gy * CELL_H);
                 }
             }
@@ -326,20 +376,15 @@
             ctx.font = '11px "Courier New",monospace';
             ctx.textBaseline = 'bottom';
             ctx.fillText(
-                'fps:' + fpsDisplay + '  sources:' + pinnedSources.length + '  t:' + simTime,
-                8, CH - 2
+                'fps:' + fpsDisplay + '  grid:' + COLS + 'x' + ROWS + '  sources:' + pinnedSources.length + '  t:' + simTime,
+                8, CH - 42
             );
         }
 
-        // ==================== FPS ====================
-        let fpsFrames = 0, fpsTime = 0, fpsDisplay = 0;
-
         // ==================== Main Loop ====================
-        let lastTime = 0;
-
         function loop(timestamp) {
             if (lastTime === 0) lastTime = timestamp;
-            const elapsed = Math.min(timestamp - lastTime, 100);
+            var elapsed = Math.min(timestamp - lastTime, 100);
             lastTime = timestamp;
 
             fpsFrames++;
@@ -350,18 +395,15 @@
                 fpsTime = 0;
             }
 
-            // Continuous source at pointer
             if (pointerDown && !shiftHeld) {
                 applySource(pointerX / CELL_W, pointerY / CELL_H);
             }
 
-            // Pinned sources
-            for (let i = 0; i < pinnedSources.length; i++) {
+            for (var i = 0; i < pinnedSources.length; i++) {
                 applySource(pinnedSources[i].gx, pinnedSources[i].gy);
             }
 
-            // Substeps
-            for (let s = 0; s < substeps; s++) {
+            for (var s = 0; s < substeps; s++) {
                 step();
             }
 
@@ -371,20 +413,17 @@
 
         // ==================== Input ====================
         function getPos(e) {
-            const rect = canvas.getBoundingClientRect();
-            const sx = CW / rect.width;
-            const sy = CH / rect.height;
-            const cx = e.touches ? e.touches[0].clientX : e.clientX;
-            const cy = e.touches ? e.touches[0].clientY : e.clientY;
-            return { x: (cx - rect.left) * sx, y: (cy - rect.top) * sy };
+            var cx = e.touches ? e.touches[0].clientX : e.clientX;
+            var cy = e.touches ? e.touches[0].clientY : e.clientY;
+            return { x: cx, y: cy };
         }
 
         canvas.addEventListener('mousedown', function (e) {
             pointerDown = true;
-            const p = getPos(e);
+            var p = getPos(e);
             pointerX = p.x; pointerY = p.y;
-            const gx = p.x / CELL_W;
-            const gy = p.y / CELL_H;
+            var gx = p.x / CELL_W;
+            var gy = p.y / CELL_H;
             if (e.shiftKey) {
                 pinnedSources.push({ gx: gx, gy: gy });
             } else {
@@ -392,20 +431,20 @@
             }
         });
         canvas.addEventListener('mousemove', function (e) {
-            const p = getPos(e);
+            var p = getPos(e);
             pointerX = p.x; pointerY = p.y;
         });
         canvas.addEventListener('mouseup', function () { pointerDown = false; });
         canvas.addEventListener('mouseleave', function () { pointerDown = false; });
         canvas.addEventListener('touchstart', function (e) {
             e.preventDefault(); pointerDown = true;
-            const p = getPos(e);
+            var p = getPos(e);
             pointerX = p.x; pointerY = p.y;
             addImpulse(p.x / CELL_W, p.y / CELL_H, IMPULSE_AMP);
         }, { passive: false });
         canvas.addEventListener('touchmove', function (e) {
             e.preventDefault();
-            const p = getPos(e);
+            var p = getPos(e);
             pointerX = p.x; pointerY = p.y;
         }, { passive: false });
         canvas.addEventListener('touchend', function () { pointerDown = false; });
